@@ -35,7 +35,7 @@ function uc_jeeb_settings_form()
     );
     $form['admin']['uc_jeeb_current_api_key'] = array(
         '#type'          => 'textfield',
-        '#title'         => t('Current Jeeb API key'),
+        '#title'         => t('Enter Jeeb Signature'),
         '#default_value' => variable_get('uc_jeeb_current_api_key', 'Please enter your signature'),
         '#description'   => t('Your current Jeeb API key should be entered here. This key must be kept private. To view or edit your API keys, please go to your merchant account at') . ' <a href="' . JEEB_WEBSITE . '" target="_blank">' . t("Jeeb's website") . '</a>.',
     );
@@ -43,10 +43,37 @@ function uc_jeeb_settings_form()
         '#type'    => 'radios',
         '#title'   => t('Live / Testing Environment'),
         '#options' => array(
-            0 => t('Go live with Jeeb Gateway for bitcoin payment.'),
+            0 => t('Go live with Jeeb Gateway for crypto payment.'),
             1 => t('Connect to test server for testing and debugging purposes.')
         ),
         '#default_value' => variable_get('uc_jeeb_debug_mode', 0),
+    );
+    $form['admin']['uc_jeeb_base_cur'] = array(
+        '#type'    => 'radios',
+        '#title'   => t('Select Base Currency'),
+        '#options' => array(
+            0 => t('BTC'),
+            1 => t('EUR'),
+            2 => t('IRR'),
+            3 => t('USD')
+        ),
+        '#default_value' => variable_get('uc_jeeb_base_cur', 0),
+    );
+    $form['admin']['uc_jeeb_target_cur'] = array(
+        '#type'          => 'textfield',
+        '#title'         => t('Enter Target Currency from (BTC,ETH,BCH,XMR,XRP,LTC,TEST-BTC)'),
+        '#default_value' => variable_get('uc_jeeb_target_cur', 'Please enter Target Currency'),
+        '#description'   => t('If you want your target currency as only BTC then you should enter "btc".<br>If you want your target currencies as BTC and LTC then you should enter "btc/ltc".<br>You can add any crypto currencies from above mentioned options.') ,
+    );
+    $form['admin']['uc_jeeb_lang'] = array(
+        '#type'    => 'radios',
+        '#title'   => t('Select language of Payment page'),
+        '#options' => array(
+            0 => t('Auto-Select'),
+            1 => t('English'),
+            2 => t('Persian')
+        ),
+        '#default_value' => variable_get('uc_jeeb_lang', 0),
         '#description'   => '<p><b>'.t('NOTE: THE MINIMUM PRICE OF THE PRODUCT SHOULD BE 10000 IRR, NOT LESS THAN THAT.').'</p></b>',
     );
 
@@ -161,49 +188,30 @@ function uc_payment_method_jeeb($op, &$order)
         break;
     case 'cart-review':
         jeeb_log("Entered Cart-Review");
-        $url = variable_get('uc_jeeb_debug_mode') ? "http://test.jeeb.io:9876/" : "https://jeeb.io/" ;
-        $amount = uc_order_get_total($order);
-        $signature = variable_get('uc_jeeb_current_api_key');
+        $url        = "https://core.jeeb.io/api/" ;
+        $amount     = uc_order_get_total($order);
+        $signature  = variable_get('uc_jeeb_current_api_key');
+        $lang       = variable_get('uc_jeeb_lang')== "0" ? NULL : variable_get('uc_jeeb_lang')=="1" ? "en" : variable_get('uc_jeeb_lang')=="2" ? "fa": "" ;
+        $target_cur = variable_get('uc_jeeb_target_cur');
+        $baseCur    = variable_get('uc_jeeb_base_cur')== "0" ? "btc" : variable_get('uc_jeeb_base_cur')=="1" ? "eur" : variable_get('uc_jeeb_base_cur')=="2" ? "irr": variable_get('uc_jeeb_base_cur')=="3" ? "usd": "" ;
 
-        $btc = convertIrrToBtc($url, $amount, $signature);
-        jeeb_log("Url:".$url." Bitcoin:".$btc." Signature:".$signature);
-        $url = variable_get('uc_jeeb_debug_mode') ? "http://test.jeeb.io:9876/" : "https://jeeb.io/" ;
-        // $btc = db_query("SELECT btc FROM {uc_payment_jeeb} WHERE order_id = :order_id", array(':order_id' => $order->order_id))->fetchField();
-        // $notification = $base_url . '/' . JEEB_NOTIFY_URL;
-        jeeb_log("Url:".$url." Bitcoin:".$btc." Notification Url:".url('uc_jeeb/notification/',array('absolute' => TRUE)).' callback Url:'. $base_url .'/'. '?q=user/' .$user->uid.'/orders');
+        $amount = convertIrrToBtc($url, $amount, $signature, $baseCur);
+        jeeb_log("Url:".$url." cart value:".$amount." Signature:".$signature." Lang:".$lang ." Target:".$target_cur." Base:".$baseCur);
+        // jeeb_log("Url:".$url." Bitcoin:".$btc." Notification Url:".url('uc_jeeb/notification/',array('absolute' => TRUE)).' callback Url:'. $base_url .'/'. '?q=user/' .$user->uid.'/orders');
         $params = array(
           'orderNo'          => $order->order_id,
-          'requestAmount'    => $btc,
-          'notificationUrl'  => url('uc_jeeb/notification/',array('absolute' => TRUE)),
-          'callBackUrl'       => url('cart/uc_jeeb/callback/',array('absolute' => TRUE)),
-          // 'callBackUrl'       => $base_url.'/'. '?q=user/' .$user->uid.'/orders',
-          'allowReject'      => variable_get('uc_jeeb_debug_mode') ? false : True
+          'value'            => $amount,
+          'webhookUrl'       => url('uc_jeeb/notification/',array('absolute' => TRUE)),
+          'callBackUrl'      => url('cart/uc_jeeb/callback/',array('absolute' => TRUE)),
+          'allowReject'      => variable_get('uc_jeeb_debug_mode') ? false : True,
+          "coins"            => $target_cur,
+          "allowTestNet"     => variable_get('uc_jeeb_debug_mode') ? true : false,
+          "language"         => $lang
         );
 
         $result = createInvoice($url, $amount, $params, $signature);
         jeeb_log("Token:".$result['token']." Reference No:".$result['referenceNo']);
-        $id = db_query("SELECT order_id FROM {uc_payment_jeeb} WHERE order_id = :order_id", array(':order_id' => $order->order_id))->fetchField();
-        if ($id==$order->order_id){
-          $add_amount = db_update('uc_payment_jeeb')
-          ->fields(array(
-            'btc' => $btc,
-            'reference_no' => $result['referenceNo'],
-            'token' => $result['token']
-          ))
-          ->condition('order_id', $order->order_id)
-          ->execute();
-        }
-        else{
-        $id = db_insert('uc_payment_jeeb')
-        ->fields(array(
-            'order_id'     => $order->order_id,
-            'btc'          => $btc,
-            'reference_no' => $result['referenceNo'],
-            'token' => $result['token']
-        ))
-        ->execute();
-        }
-
+        
         echo redirectPayment($url, $result['token']);
 
         $review[] = t('Payable Bitcoins :') . $btc.'<br />'.t('Please click on submit order.'.
